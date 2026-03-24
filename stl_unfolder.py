@@ -352,10 +352,10 @@ class MeshViewer3D(tk.Canvas):
             (x1, y1), (x2, y2) = coords
             dx, dy = x2 - x1, y2 - y1
             if dx == 0 and dy == 0:
-                dist = math.sqrt((x - x1)**2 + **(y - y1)2)
+                dist = math.sqrt((x - x1)**2 + (y - y1)**2)
             else:
                 t = max(0, min(1, ((x - x1) * dx + (y - y1) * dy) / (dx*dx + dy*dy)))
-                dist = math.sqrt((x - (x1 + t * dx))**2 + **(y - (y1 + t * dy))2)
+                dist = math.sqrt((x - (x1 + t * dx))**2 + (y - (y1 + t * dy))**2)
             if dist < min_dist:
                 min_dist, selected = dist, edge
         if selected:
