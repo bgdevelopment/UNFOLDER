@@ -403,13 +403,20 @@ class STLUnfolder:
         i %= 6
         return [(v,t,p),(q,v,p),(p,v,t),(p,q,v),(t,p,v),(v,p,q)][i]
     
-    def export_svg(self, filepath: str, scale: float = 1.0) -> bool:
+    def export_svg(self, filepath: str, scale: float = 10.0) -> bool:
         """
-        Export unfolded mesh to SVG format.
+        Export unfolded mesh to SVG format with glue tabs, fold lines, and face numbers.
+        
+        Features:
+        - Colored faces with black cut edges
+        - Blue dashed valley fold lines between connected faces
+        - Gray glue tabs on cut edges with connection numbers
+        - Face numbers in center of each face
+        - Optimized layout scaled to fit page
         
         Args:
             filepath: Output file path
-            scale: Scaling factor for the output
+            scale: Scaling factor for the output (default 10.0 for good print size)
             
         Returns:
             True if export succeeded, False otherwise
@@ -422,26 +429,165 @@ class STLUnfolder:
             min_x, min_y = all_points.min(axis=0)
             max_x, max_y = all_points.max(axis=0)
             width, height = max_x - min_x, max_y - min_y
-            margin = 20
+            
+            # Add margin for glue tabs
+            tab_size = 15 * scale
+            margin = 40 + tab_size
+            
+            # Calculate face connectivity for determining fold vs cut edges
+            edge_faces = {}
+            for face_idx, face in enumerate(self.mesh.faces):
+                for i in range(3):
+                    v1, v2 = face[i], face[(i + 1) % 3]
+                    key = tuple(sorted([v1, v2]))
+                    if key not in edge_faces:
+                        edge_faces[key] = []
+                    edge_faces[key].append(face_idx)
+            
+            svg_width = int((width + 2 * margin/scale) * scale)
+            svg_height = int((height + 2 * margin/scale) * scale)
+            
             with open(filepath, 'w') as f:
-                f.write(f'<svg xmlns="http://www.w3.org/2000/svg" width="{int((width+2*margin)*scale)}" height="{int((height+2*margin)*scale)}" viewBox="{min_x-margin} {min_y-margin} {width+2*margin} {height+2*margin}">\n')
+                f.write(f'<svg xmlns="http://www.w3.org/2000/svg" width="{svg_width}" height="{svg_height}" viewBox="{min_x - margin/scale} {min_y - margin/scale} {width + 2*margin/scale} {height + 2*margin/scale}">\n')
+                
+                # Write styles
+                f.write('<defs>\n')
+                f.write('  <style>\n')
+                f.write('    .face { stroke: black; stroke-width: 0.5; }\n')
+                f.write('    .cut-edge { stroke: black; stroke-width: 1.5; fill: none; }\n')
+                f.write('    .fold-line { stroke: #4169E1; stroke-width: 0.8; stroke-dasharray: 3,2; fill: none; }\n')
+                f.write('    .glue-tab { fill: #d0d0d0; stroke: #808080; stroke-width: 0.5; stroke-dasharray: 2,2; opacity: 0.7; }\n')
+                f.write('    .face-number { font-family: Arial; font-size: 3; font-weight: bold; fill: black; text-anchor: middle; }\n')
+                f.write('    .tab-number { font-family: Arial; font-size: 2.5; fill: #404040; text-anchor: middle; }\n')
+                f.write('  </style>\n')
+                f.write('</defs>\n')
+                
+                # Draw all faces
                 for face_idx, face_coords in enumerate(self.unfolded_faces):
-                    if face_coords is None: continue
+                    if face_coords is None:
+                        continue
+                    
                     color = self.face_colors[face_idx]
                     points = " ".join([f"{x},{y}" for x, y in face_coords])
-                    f.write(f'  <polygon points="{points}" fill="#{int(color[0]*255):02x}{int(color[1]*255):02x}{int(color[2]*255):02x}" fill-opacity="0.7" stroke="black" stroke-width="0.5"/>\n')
+                    
+                    # Draw face polygon
+                    f.write(f'  <polygon class="face" points="{points}" fill="rgb({int(color[0]*255)},{int(color[1]*255)},{int(color[2]*255)})" fill-opacity="0.6"/>\n')
+                    
+                    # Calculate face center for number
+                    cx = sum(p[0] for p in face_coords) / 3
+                    cy = sum(p[1] for p in face_coords) / 3
+                    f.write(f'  <text class="face-number" x="{cx}" y="{cy}">{face_idx + 1}</text>\n')
+                
+                # Draw edges (cut edges as solid, fold edges as dashed)
+                drawn_edges = set()
+                for edge_key, face_list in edge_faces.items():
+                    if len(face_list) != 2:
+                        continue
+                    
+                    f1, f2 = face_list
+                    if self.unfolded_faces[f1] is None or self.unfolded_faces[f2] is None:
+                        continue
+                    
+                    # Check if this edge is cut
+                    edge_obj = Edge(v1=edge_key[0], v2=edge_key[1], faces=face_list)
+                    is_cut = self.is_edge_cut(edge_obj)
+                    
+                    # Find the edge coordinates in both faces
+                    face1_verts = self.mesh.faces[f1]
+                    face2_verts = self.mesh.faces[f2]
+                    
+                    # Get 2D coordinates for this edge in face1
+                    edge_pts_f1 = None
+                    for i in range(3):
+                        v1_idx = face1_verts[i]
+                        v2_idx = face1_verts[(i + 1) % 3]
+                        if tuple(sorted([v1_idx, v2_idx])) == edge_key:
+                            edge_pts_f1 = (self.unfolded_faces[f1][i], self.unfolded_faces[f1][(i + 1) % 3])
+                            break
+                    
+                    if edge_pts_f1 is None:
+                        continue
+                    
+                    # Only draw once per edge
+                    edge_sig = tuple(sorted([edge_key, (f1, f2)]))
+                    if edge_sig in drawn_edges:
+                        continue
+                    drawn_edges.add(edge_sig)
+                    
+                    p1, p2 = edge_pts_f1
+                    
+                    if is_cut:
+                        # Cut edge - already drawn as part of face outline
+                        pass
+                    else:
+                        # Fold edge - draw dashed line
+                        f.write(f'  <line class="fold-line" x1="{p1[0]}" y1="{p1[1]}" x2="{p2[0]}" y2="{p2[1]}"/>\n')
+                        
+                        # Add glue tab on one side
+                        self._draw_glue_tab(f, p1, p2, f1, f2, scale)
+                
                 f.write('</svg>\n')
             return True
         except Exception as e:
             print(f"Error exporting SVG: {e}")
+            import traceback
+            traceback.print_exc()
             return False
+    
+    def _draw_glue_tab(self, f, p1, p2, f1, f2, scale):
+        """Draw a glue tab between two points"""
+        # Calculate perpendicular direction outward from face
+        dx = p2[0] - p1[0]
+        dy = p2[1] - p1[1]
+        length = math.sqrt(dx*dx + dy*dy)
+        
+        if length < 0.1:
+            return
+        
+        # Normalize
+        ux, uy = dx / length, dy / length
+        
+        # Perpendicular (pointing outward - we'll use a consistent direction)
+        px, py = -uy, ux
+        
+        # Tab dimensions
+        tab_height = 8 * scale / 10.0  # Height of the tab
+        base_width = length * 0.8  # Slightly narrower than edge
+        tip_width = base_width * 0.6  # Tapered
+        
+        # Midpoint of edge
+        mx, my = (p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2
+        
+        # Tab points (trapezoid)
+        half_base = base_width / 2
+        half_tip = tip_width / 2
+        
+        # Base points (slightly inset from edge)
+        b1x, b1y = mx - ux * half_base + px * 0.1, my - uy * half_base + py * 0.1
+        b2x, b2y = mx + ux * half_base + px * 0.1, my + uy * half_base + py * 0.1
+        
+        # Tip points
+        t1x, t1y = mx - ux * half_tip + px * tab_height, my - uy * half_tip + py * tab_height
+        t2x, t2y = mx + ux * half_tip + px * tab_height, my + uy * half_tip + py * tab_height
+        
+        # Draw tab polygon
+        tab_points = f"{b1x},{b1y} {t1x},{t1y} {t2x},{t2y} {b2x},{b2y}"
+        f.write(f'  <polygon class="glue-tab" points="{tab_points}"/>\n')
+        
+        # Add connection number (arrow pointing to connected face)
+        tip_mx, tip_my = (t1x + t2x) / 2, (t1y + t2y) / 2
+        f.write(f'  <text class="tab-number" x="{tip_mx}" y="{tip_my}">→{f2 + 1}</text>\n')
     
     def export_pdf(self, filepath: str, scale: float = 1.0) -> bool:
         """
-        Export unfolded mesh to PDF for printing on A4 paper.
+        Export unfolded mesh to PDF for printing on A4 paper with glue tabs and fold lines.
         
-        The mesh is automatically scaled and centered to fit on an A4 page
-        with appropriate margins for papercrafting.
+        Features:
+        - Colored faces with black outlines
+        - Blue dashed valley fold lines
+        - Gray glue tabs with connection numbers
+        - Face numbers for assembly
+        - Automatically scaled to fit A4 page
         
         Args:
             filepath: Output file path
@@ -463,11 +609,14 @@ class STLUnfolder:
             c = canvas.Canvas(filepath, pagesize=A4)
             page_width, page_height = A4
             
-            # Calculate scale to fit on page with margins
-            margin = 20
+            # Calculate scale to fit on page with margins (accounting for glue tabs)
+            margin = 30
             available_w = page_width - 2 * margin
             available_h = page_height - 2 * margin
-            scale_factor = min(available_w / width, available_h / height) * scale
+            
+            # Add extra space for glue tabs
+            tab_margin = 15
+            scale_factor = min(available_w / (width + 2*tab_margin), available_h / (height + 2*tab_margin)) * scale
             
             # Offset to center on page
             offset_x = margin + (available_w - width * scale_factor) / 2 - min_x * scale_factor
@@ -497,20 +646,142 @@ class STLUnfolder:
                 c.setStrokeColor(black)
                 c.setLineWidth(0.5)
                 c.drawPath(path, fill=1, stroke=1)
+                
+                # Draw face number
+                cx = sum(p[0] for p in face_coords) / 3
+                cy = sum(p[1] for p in face_coords) / 3
+                pcx, pcy = cx * scale_factor + offset_x, cy * scale_factor + offset_y
+                c.setFillColor(black)
+                c.setFont("Helvetica-Bold", 8)
+                c.drawCentredString(pcx, pcy, str(face_idx + 1))
+            
+            # Draw fold lines and glue tabs
+            edge_faces = {}
+            for face_idx, face in enumerate(self.mesh.faces):
+                for i in range(3):
+                    v1, v2 = face[i], face[(i + 1) % 3]
+                    key = tuple(sorted([v1, v2]))
+                    if key not in edge_faces:
+                        edge_faces[key] = []
+                    edge_faces[key].append(face_idx)
+            
+            drawn_edges = set()
+            for edge_key, face_list in edge_faces.items():
+                if len(face_list) != 2:
+                    continue
+                
+                f1, f2 = face_list
+                if self.unfolded_faces[f1] is None or self.unfolded_faces[f2] is None:
+                    continue
+                
+                edge_obj = Edge(v1=edge_key[0], v2=edge_key[1], faces=face_list)
+                is_cut = self.is_edge_cut(edge_obj)
+                
+                face1_verts = self.mesh.faces[f1]
+                edge_pts_f1 = None
+                for i in range(3):
+                    v1_idx = face1_verts[i]
+                    v2_idx = face1_verts[(i + 1) % 3]
+                    if tuple(sorted([v1_idx, v2_idx])) == edge_key:
+                        edge_pts_f1 = (self.unfolded_faces[f1][i], self.unfolded_faces[f1][(i + 1) % 3])
+                        break
+                
+                if edge_pts_f1 is None:
+                    continue
+                
+                edge_sig = tuple(sorted([edge_key, (f1, f2)]))
+                if edge_sig in drawn_edges:
+                    continue
+                drawn_edges.add(edge_sig)
+                
+                p1, p2 = edge_pts_f1
+                px1, py1 = p1[0] * scale_factor + offset_x, p1[1] * scale_factor + offset_y
+                px2, py2 = p2[0] * scale_factor + offset_x, p2[1] * scale_factor + offset_y
+                
+                if not is_cut:
+                    # Draw fold line (dashed blue)
+                    c.setStrokeColor(HexColor("#4169E1"))
+                    c.setLineWidth(1)
+                    c.setDash(3, 2)
+                    c.line(px1, py1, px2, py2)
+                    c.setDash(1, 0)  # Reset dash
+                    
+                    # Draw glue tab
+                    self._draw_glue_tab_pdf(c, p1, p2, f1, f2, scale_factor, offset_x, offset_y)
             
             c.save()
             return True
         except Exception as e:
             print(f"Error exporting PDF: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
-    def export_png(self, filepath: str, scale: float = 2.0, bg_color: tuple = (255, 255, 255)) -> bool:
+    def _draw_glue_tab_pdf(self, c, p1, p2, f1, f2, scale, offset_x, offset_y):
+        """Draw a glue tab in PDF"""
+        dx = p2[0] - p1[0]
+        dy = p2[1] - p1[1]
+        length = math.sqrt(dx*dx + dy*dy)
+        
+        if length < 0.1:
+            return
+        
+        ux, uy = dx / length, dy / length
+        px, py = -uy, ux
+        
+        tab_height = 8 * scale / 10.0
+        base_width = length * 0.8
+        tip_width = base_width * 0.6
+        
+        mx, my = (p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2
+        half_base = base_width / 2
+        half_tip = tip_width / 2
+        
+        b1x = (mx - ux * half_base + px * 0.1) * scale + offset_x
+        b1y = (my - uy * half_base + py * 0.1) * scale + offset_y
+        b2x = (mx + ux * half_base + px * 0.1) * scale + offset_x
+        b2y = (my + uy * half_base + py * 0.1) * scale + offset_y
+        t1x = (mx - ux * half_tip + px * tab_height) * scale + offset_x
+        t1y = (my - uy * half_tip + py * tab_height) * scale + offset_y
+        t2x = (mx + ux * half_tip + px * tab_height) * scale + offset_x
+        t2y = (my + uy * half_tip + py * tab_height) * scale + offset_y
+        
+        # Draw tab (gray filled)
+        path = c.beginPath()
+        path.moveTo(b1x, b1y)
+        path.lineTo(t1x, t1y)
+        path.lineTo(t2x, t2y)
+        path.lineTo(b2x, b2y)
+        path.close()
+        
+        c.setFillColor(HexColor("#d0d0d0"))
+        c.setStrokeColor(HexColor("#808080"))
+        c.setLineWidth(0.5)
+        c.setDash(2, 2)
+        c.drawPath(path, fill=1, stroke=1)
+        c.setDash(1, 0)
+        
+        # Draw connection number
+        tip_mx = (t1x + t2x) / 2
+        tip_my = (t1y + t2y) / 2
+        c.setFillColor(HexColor("#404040"))
+        c.setFont("Helvetica", 6)
+        c.drawCentredString(tip_mx, tip_my, f"→{f2 + 1}")
+    
+    def export_png(self, filepath: str, scale: float = 5.0, bg_color: tuple = (255, 255, 255)) -> bool:
         """
-        Export unfolded mesh to PNG image.
+        Export unfolded mesh to PNG image with glue tabs and fold lines.
+        
+        Features:
+        - Colored semi-transparent faces
+        - Black cut edges
+        - Blue dashed fold lines
+        - Gray glue tabs with connection numbers
+        - Face numbers for assembly
         
         Args:
             filepath: Output file path
-            scale: Pixels per unit (higher = larger image)
+            scale: Pixels per unit (higher = larger image, default 5.0)
             bg_color: Background color as RGB tuple (default: white)
             
         Returns:
@@ -525,17 +796,18 @@ class STLUnfolder:
             max_x, max_y = all_points.max(axis=0)
             width, height = max_x - min_x, max_y - min_y
             
-            # Image dimensions
-            img_width = int(width * scale) + 40
-            img_height = int(height * scale) + 40
+            # Add margin for glue tabs
+            tab_margin = 20
+            img_width = int((width + 2 * tab_margin) * scale) + 40
+            img_height = int((height + 2 * tab_margin) * scale) + 40
             
-            # Create image
-            img = Image.new('RGB', (img_width, img_height), bg_color)
+            # Create image with alpha channel
+            img = Image.new('RGBA', (img_width, img_height), (*bg_color, 255))
             draw = ImageDraw.Draw(img)
             
             # Calculate offset to center
-            offset_x = 20 - min_x * scale
-            offset_y = 20 - min_y * scale
+            offset_x = 20 - min_x * scale + tab_margin * scale
+            offset_y = 20 - min_y * scale + tab_margin * scale
             
             # Draw each face
             for face_idx, face_coords in enumerate(self.unfolded_faces):
@@ -548,13 +820,127 @@ class STLUnfolder:
                 pts = [(x * scale + offset_x, y * scale + offset_y) for x, y in face_coords]
                 
                 # Draw polygon
-                draw.polygon(pts, fill=fill_color, outline=(0, 0, 0))
+                draw.polygon(pts, fill=fill_color, outline=(0, 0, 0), width=1)
+                
+                # Draw face number
+                cx = sum(p[0] for p in face_coords) / 3
+                cy = sum(p[1] for p in face_coords) / 3
+                pcx, pcy = cx * scale + offset_x, cy * scale + offset_y
+                # Use a simple approach for text - PIL needs font loading for proper sizing
+                try:
+                    from PIL import ImageFont
+                    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
+                except:
+                    font = ImageFont.load_default()
+                text = str(face_idx + 1)
+                bbox = draw.textbbox((0, 0), text, font=font)
+                tw = bbox[2] - bbox[0]
+                th = bbox[3] - bbox[1]
+                draw.text((pcx - tw/2, pcy - th/2), text, fill=(0, 0, 0), font=font)
+            
+            # Draw fold lines and glue tabs
+            edge_faces = {}
+            for face_idx, face in enumerate(self.mesh.faces):
+                for i in range(3):
+                    v1, v2 = face[i], face[(i + 1) % 3]
+                    key = tuple(sorted([v1, v2]))
+                    if key not in edge_faces:
+                        edge_faces[key] = []
+                    edge_faces[key].append(face_idx)
+            
+            drawn_edges = set()
+            for edge_key, face_list in edge_faces.items():
+                if len(face_list) != 2:
+                    continue
+                
+                f1, f2 = face_list
+                if self.unfolded_faces[f1] is None or self.unfolded_faces[f2] is None:
+                    continue
+                
+                edge_obj = Edge(v1=edge_key[0], v2=edge_key[1], faces=face_list)
+                is_cut = self.is_edge_cut(edge_obj)
+                
+                face1_verts = self.mesh.faces[f1]
+                edge_pts_f1 = None
+                for i in range(3):
+                    v1_idx = face1_verts[i]
+                    v2_idx = face1_verts[(i + 1) % 3]
+                    if tuple(sorted([v1_idx, v2_idx])) == edge_key:
+                        edge_pts_f1 = (self.unfolded_faces[f1][i], self.unfolded_faces[f1][(i + 1) % 3])
+                        break
+                
+                if edge_pts_f1 is None:
+                    continue
+                
+                edge_sig = tuple(sorted([edge_key, (f1, f2)]))
+                if edge_sig in drawn_edges:
+                    continue
+                drawn_edges.add(edge_sig)
+                
+                p1, p2 = edge_pts_f1
+                px1, py1 = p1[0] * scale + offset_x, p1[1] * scale + offset_y
+                px2, py2 = p2[0] * scale + offset_x, p2[1] * scale + offset_y
+                
+                if not is_cut:
+                    # Draw fold line (dashed blue)
+                    draw.line([(px1, py1), (px2, py2)], fill=(65, 105, 225), width=2)
+                    
+                    # Draw glue tab
+                    self._draw_glue_tab_png(draw, p1, p2, f1, f2, scale, offset_x, offset_y)
             
             img.save(filepath)
             return True
         except Exception as e:
             print(f"Error exporting PNG: {e}")
+            import traceback
+            traceback.print_exc()
             return False
+    
+    def _draw_glue_tab_png(self, draw, p1, p2, f1, f2, scale, offset_x, offset_y):
+        """Draw a glue tab in PNG"""
+        dx = p2[0] - p1[0]
+        dy = p2[1] - p1[1]
+        length = math.sqrt(dx*dx + dy*dy)
+        
+        if length < 0.1:
+            return
+        
+        ux, uy = dx / length, dy / length
+        px, py = -uy, ux
+        
+        tab_height = 8 * scale / 10.0
+        base_width = length * 0.8
+        tip_width = base_width * 0.6
+        
+        mx, my = (p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2
+        half_base = base_width / 2
+        half_tip = tip_width / 2
+        
+        b1 = ((mx - ux * half_base + px * 0.1) * scale + offset_x,
+              (my - uy * half_base + py * 0.1) * scale + offset_y)
+        b2 = ((mx + ux * half_base + px * 0.1) * scale + offset_x,
+              (my + uy * half_base + py * 0.1) * scale + offset_y)
+        t1 = ((mx - ux * half_tip + px * tab_height) * scale + offset_x,
+              (my - uy * half_tip + py * tab_height) * scale + offset_y)
+        t2 = ((mx + ux * half_tip + px * tab_height) * scale + offset_x,
+              (my + uy * half_tip + py * tab_height) * scale + offset_y)
+        
+        # Draw tab (gray filled with dashed outline)
+        draw.polygon([b1, t1, t2, b2], fill=(208, 208, 208, 180), outline=(128, 128, 128), width=1)
+        
+        # Draw connection number
+        tip_mx = (t1[0] + t2[0]) / 2
+        tip_my = (t1[1] + t2[1]) / 2
+        try:
+            from PIL import ImageFont
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
+        except:
+            font = ImageFont.load_default()
+        text = f"→{f2 + 1}"
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        draw.text((tip_mx - tw/2, tip_my - th/2), text, fill=(64, 64, 64), font=font)
     
     def export_json(self, filepath: str) -> bool:
         """
@@ -931,7 +1317,8 @@ class STLUnfolderGUI:
         try:
             if self.unfolder.unfold():
                 self.v2d.update_view()
-                self.status_var.set(f"Success! Unfolded {len(self.unfolder.faces_2d)} faces.")
+                n_faces = len([f for f in self.unfolder.unfolded_faces if f is not None])
+                self.status_var.set(f"Success! Unfolded {n_faces} faces.")
             else:
                 self.status_var.set("Error: Failed to unfold mesh")
         except Exception as e:
