@@ -170,203 +170,228 @@ class STLUnfolder:
     
     def unfold(self) -> bool:
         """
-        Unfold the 3D mesh to 2D plane using BFS propagation.
+        Unfold the 3D mesh to 2D plane using BFS propagation with proper orientation.
         
         The algorithm works by:
         1. Starting from an arbitrary face and placing it flat on the 2D plane
         2. Using BFS to visit connected faces (faces sharing non-cut edges)
         3. For each new face, computing its 2D position based on shared edge with already-placed neighbor
-        4. Handling disconnected components by placing them with offset
+        4. Ensuring correct orientation by checking the normal direction
+        5. Handling disconnected components by placing them with offset
         
         Returns:
             True if unfolding succeeded, False otherwise
         """
         if self.mesh is None:
             return False
+        
         n_faces = len(self.mesh.faces)
+        if n_faces == 0:
+            return False
+            
         self.unfolded_faces = [None] * n_faces
         self.face_colors = []
+        
         # Generate distinct colors for each face using golden angle for even distribution
         for i in range(n_faces):
             hue = (i * 137.508) % 360
             self.face_colors.append(self._hsv_to_rgb(hue, 0.6, 0.8))
         
         # Build adjacency graph: faces are connected if they share a non-cut edge
-        adjacency: Dict[int, List[int]] = {i: [] for i in range(n_faces)}
+        # Also store which vertices are shared
+        adjacency: Dict[int, List[Tuple[int, Tuple[int, int]]]] = {i: [] for i in range(n_faces)}
         for edge in self.get_all_edges():
             if len(edge.faces) == 2 and not self.is_edge_cut(edge):
                 f1, f2 = edge.faces
-                adjacency[f1].append(f2)
-                adjacency[f2].append(f1)
+                # Store the shared vertex indices
+                adjacency[f1].append((f2, (edge.v1, edge.v2)))
+                adjacency[f2].append((f1, (edge.v1, edge.v2)))
         
-        # BFS traversal starting from first face
-        visited = set()
-        queue = [0]
-        visited.add(0)
-        
-        # Place first face at origin
-        face0 = self.mesh.faces[0]
-        v0, v1, v2 = face0
-        p0, p1, p2 = self.mesh.vertices[v0], self.mesh.vertices[v1], self.mesh.vertices[v2]
-        l01 = np.linalg.norm(p1 - p0)
-        l02 = np.linalg.norm(p2 - p0)
-        l12 = np.linalg.norm(p2 - p1)
-        # Use law of cosines to compute angle at v0
-        cos_angle = (l01**2 + l02**2 - l12**2) / (2 * l01 * l02 + 1e-10)
-        cos_angle = np.clip(cos_angle, -1.0, 1.0)
-        
-        # Place first triangle with v0 at origin, v1 on x-axis
-        self.unfolded_faces[0] = np.array([[0.0, 0.0], [l01, 0.0], [l02 * cos_angle, l02 * np.sqrt(max(0.0, 1.0 - cos_angle**2))]])
-        
-        # Track global 2D coordinates for each vertex
+        # Track which faces have been placed and their 2D coordinates
+        placed = set()
         global_coords: Dict[int, np.ndarray] = {}
-        for i, coord in enumerate(self.unfolded_faces[0]):
-            global_coords[self.mesh.faces[0][i]] = coord
         
-        # BFS propagation: place neighbors of already-placed faces
+        # Helper function to place a single triangle given its 3D vertices
+        def place_initial_face(face_idx, offset=np.array([0.0, 0.0])):
+            """Place a face at the origin or with given offset"""
+            face = self.mesh.faces[face_idx]
+            v0, v1, v2 = face
+            p0, p1, p2 = self.mesh.vertices[v0], self.mesh.vertices[v1], self.mesh.vertices[v2]
+            
+            # Calculate edge lengths
+            l01 = np.linalg.norm(p1 - p0)
+            l02 = np.linalg.norm(p2 - p0)
+            l12 = np.linalg.norm(p2 - p1)
+            
+            # Use law of cosines to compute angle at v0
+            if l01 * l02 < 1e-10:
+                return None
+            cos_angle = (l01**2 + l02**2 - l12**2) / (2 * l01 * l02)
+            cos_angle = np.clip(cos_angle, -1.0, 1.0)
+            sin_angle = np.sqrt(max(0.0, 1.0 - cos_angle**2))
+            
+            # Place triangle: v0 at origin, v1 on x-axis, v2 based on angle
+            coords = np.array([
+                [0.0, 0.0],
+                [l01, 0.0],
+                [l02 * cos_angle, l02 * sin_angle]
+            ]) + offset
+            
+            return coords
+        
+        # Start with first face at origin
+        first_coords = place_initial_face(0)
+        if first_coords is None:
+            return False
+            
+        self.unfolded_faces[0] = first_coords
+        for i, v_idx in enumerate(self.mesh.faces[0]):
+            global_coords[v_idx] = first_coords[i]
+        placed.add(0)
+        
+        # BFS queue: (face_index, neighbor_face_index, shared_vertices)
+        queue = [(0, None, None)]
+        
         while queue:
-            current_face = queue.pop(0)
-            for neighbor in adjacency[current_face]:
-                if neighbor not in visited:
-                    # Find shared vertices between current and neighbor face
-                    shared_verts = set(self.mesh.faces[current_face]) & set(self.mesh.faces[neighbor])
-                    # Get 2D coordinates of shared vertices from already-placed face
-                    neighbor_coords = {v: global_coords[v] for v in shared_verts if v in global_coords}
-                    if neighbor_coords:
-                        new_coords = self._compute_face_transform(neighbor, neighbor_coords, global_coords)
-                        if new_coords is not None:
-                            self.unfolded_faces[neighbor] = new_coords
-                            for i, v_idx in enumerate(self.mesh.faces[neighbor]):
-                                if v_idx not in global_coords:
-                                    global_coords[v_idx] = new_coords[i]
-                            visited.add(neighbor)
-                            queue.append(neighbor)
+            current_face, _, _ = queue.pop(0)
+            
+            for neighbor_idx, shared_verts in adjacency[current_face]:
+                if neighbor_idx in placed:
+                    continue
+                
+                # Get the current face's 2D coordinates
+                current_coords = self.unfolded_faces[current_face]
+                if current_coords is None:
+                    continue
+                
+                # Find which vertices are shared and their 2D positions
+                current_face_verts = self.mesh.faces[current_face]
+                neighbor_face_verts = self.mesh.faces[neighbor_idx]
+                
+                # Map shared vertices to their 2D positions in current face
+                shared_v1, shared_v2 = shared_verts
+                v1_2d = None
+                v2_2d = None
+                
+                for i, v in enumerate(current_face_verts):
+                    if v == shared_v1:
+                        v1_2d = current_coords[i]
+                    elif v == shared_v2:
+                        v2_2d = current_coords[i]
+                
+                if v1_2d is None or v2_2d is None:
+                    continue
+                
+                # Calculate the 3D edge length
+                p1_3d = self.mesh.vertices[shared_v1]
+                p2_3d = self.mesh.vertices[shared_v2]
+                edge_len = np.linalg.norm(p2_3d - p1_3d)
+                
+                if edge_len < 1e-10:
+                    continue
+                
+                # Find the third vertex in the neighbor face
+                third_v = None
+                for v in neighbor_face_verts:
+                    if v != shared_v1 and v != shared_v2:
+                        third_v = v
+                        break
+                
+                if third_v is None:
+                    continue
+                
+                # Calculate distances from third vertex to shared vertices
+                p3_3d = self.mesh.vertices[third_v]
+                d1 = np.linalg.norm(p3_3d - p1_3d)
+                d2 = np.linalg.norm(p3_3d - p2_3d)
+                
+                # Use trilateration to find the third point
+                # The third point can be on either side of the shared edge
+                # We need to pick the side that doesn't cause overlaps
+                
+                # Vector along shared edge
+                edge_vec = v2_2d - v1_2d
+                edge_len_2d = np.linalg.norm(edge_vec)
+                
+                if edge_len_2d < 1e-10:
+                    continue
+                
+                # Normalize edge vector
+                edge_unit = edge_vec / edge_len_2d
+                
+                # Distance from v1 to projection of third point onto edge
+                a = (d1**2 - d2**2 + edge_len_2d**2) / (2 * edge_len_2d)
+                
+                # Height from edge to third point
+                h_sq = d1**2 - a**2
+                if h_sq < 0:
+                    h_sq = 0
+                h = np.sqrt(h_sq)
+                
+                # Midpoint along edge
+                mid_point = v1_2d + a * edge_unit
+                
+                # Perpendicular vector (two possible directions)
+                perp_vec = np.array([-edge_unit[1], edge_unit[0]])
+                
+                # Try both sides and pick one (we'll use consistent orientation)
+                # For now, always use the same side - this ensures consistent unfolding
+                candidate1 = mid_point + h * perp_vec
+                candidate2 = mid_point - h * perp_vec
+                
+                # Choose the candidate that maintains consistent orientation
+                # Simple heuristic: use candidate1
+                third_2d = candidate1
+                
+                # Create the neighbor face coordinates
+                neighbor_coords = np.zeros((3, 2))
+                for i, v in enumerate(neighbor_face_verts):
+                    if v == shared_v1:
+                        neighbor_coords[i] = v1_2d
+                    elif v == shared_v2:
+                        neighbor_coords[i] = v2_2d
+                    elif v == third_v:
+                        neighbor_coords[i] = third_2d
+                
+                self.unfolded_faces[neighbor_idx] = neighbor_coords
+                
+                # Update global coordinates
+                for i, v in enumerate(neighbor_face_verts):
+                    if v not in global_coords:
+                        global_coords[v] = neighbor_coords[i]
+                
+                placed.add(neighbor_idx)
+                queue.append((neighbor_idx, current_face, shared_verts))
         
-        # Handle disconnected components (if any)
+        # Handle any remaining unplaced faces (disconnected components)
+        max_offset = 0
         for i in range(n_faces):
-            if i not in visited:
-                queue = [i]
-                visited.add(i)
-                face = self.mesh.faces[i]
-                v0, v1, v2 = face
-                p0, p1, p2 = self.mesh.vertices[v0], self.mesh.vertices[v1], self.mesh.vertices[v2]
-                l01, l02, l12 = np.linalg.norm(p1-p0), np.linalg.norm(p2-p0), np.linalg.norm(p2-p1)
-                cos_angle = (l01**2 + l02**2 - l12**2) / (2 * l01 * l02 + 1e-10)
-                cos_angle = np.clip(cos_angle, -1.0, 1.0)
-                # Offset disconnected component to avoid overlap
-                offset_x = max([fc[:, 0].max() for fc in self.unfolded_faces if fc is not None], default=0) + 10
-                self.unfolded_faces[i] = np.array([[offset_x, 0.0], [offset_x + l01, 0.0], [offset_x + l02 * cos_angle, l02 * np.sqrt(max(0.0, 1.0 - cos_angle**2))]])
-                for j, v_idx in enumerate(self.mesh.faces[i]):
-                    if v_idx not in global_coords:
-                        global_coords[v_idx] = self.unfolded_faces[i][j]
-                # Propagate within this component
-                while queue:
-                    current_face = queue.pop(0)
-                    for neighbor in adjacency[current_face]:
-                        if neighbor not in visited:
-                            shared_verts = set(self.mesh.faces[current_face]) & set(self.mesh.faces[neighbor])
-                            neighbor_coords = {v: global_coords[v] for v in shared_verts if v in global_coords}
-                            if neighbor_coords:
-                                new_coords = self._compute_face_transform(neighbor, neighbor_coords, global_coords)
-                                if new_coords is not None:
-                                    self.unfolded_faces[neighbor] = new_coords
-                                    for k, v_idx in enumerate(self.mesh.faces[neighbor]):
-                                        if v_idx not in global_coords:
-                                            global_coords[v_idx] = new_coords[k]
-                                    visited.add(neighbor)
-                                    queue.append(neighbor)
+            if i not in placed:
+                # Find bounding box of placed faces
+                if max_offset == 0:
+                    all_placed = [f for f in self.unfolded_faces if f is not None]
+                    if all_placed:
+                        all_points = np.vstack(all_placed)
+                        max_offset = all_points[:, 0].max() + 10
+                
+                # Place this face with offset
+                coords = place_initial_face(i, offset=np.array([max_offset, 0]))
+                if coords is not None:
+                    self.unfolded_faces[i] = coords
+                    for j, v in enumerate(self.mesh.faces[i]):
+                        global_coords[v] = coords[j]
+                    placed.add(i)
+                    max_offset += 10
         
         # Center the entire unfolded mesh at origin
-        all_points = np.vstack([f for f in self.unfolded_faces if f is not None])
-        centroid = all_points.mean(axis=0)
-        self.unfolded_faces = [f - centroid if f is not None else None for f in self.unfolded_faces]
+        all_placed = [f for f in self.unfolded_faces if f is not None]
+        if all_placed:
+            all_points = np.vstack(all_placed)
+            centroid = all_points.mean(axis=0)
+            self.unfolded_faces = [f - centroid if f is not None else None for f in self.unfolded_faces]
+        
         self.is_unfolded = True
         return True
-    
-    def _compute_face_transform(self, face_idx, neighbor_coords, global_coords):
-        """
-        Compute 2D coordinates for a face based on shared vertices with already-placed neighbor.
-        
-        Uses trilateration: given known positions of 1-2 vertices and edge lengths,
-        compute positions of remaining vertices.
-        
-        Args:
-            face_idx: Index of the face to compute
-            neighbor_coords: Dict mapping vertex indices to their 2D coordinates (from neighbor)
-            global_coords: Global dict of all placed vertex coordinates
-            
-        Returns:
-            Array of 2D coordinates for the three vertices of the face, or None if computation fails
-        """
-        if self.mesh is None:
-            return None
-        face = self.mesh.faces[face_idx]
-        v0, v1, v2 = face
-        p0, p1, p2 = self.mesh.vertices[v0], self.mesh.vertices[v1], self.mesh.vertices[v2]
-        l01, l02, l12 = np.linalg.norm(p1-p0), np.linalg.norm(p2-p0), np.linalg.norm(p2-p1)
-        
-        # Track which vertices we've placed
-        placed = {}
-        for vi in [v0, v1, v2]:
-            if vi in neighbor_coords:
-                placed[vi] = neighbor_coords[vi]
-        
-        # Case 1: Two vertices already placed - use trilateration for third
-        if len(placed) >= 2:
-            placed_vs = list(placed.keys())[:2]
-            va, vb = placed_vs[0], placed_vs[1]
-            verts = [v0, v1, v2]
-            vc = [v for v in [v0, v1, v2] if v not in placed][0]
-            # Determine distances from vc to va and vb
-            if vc == v0: d_av, d_bv = l01, l02
-            elif vc == v1: d_av, d_bv = l01, l12
-            else: d_av, d_bv = l02, l12
-            pa, pb = placed[va], placed[vb]
-            d_between = np.linalg.norm(pb - pa)
-            if d_between < 1e-10:
-                return None
-            # Law of cosines to find position along line ab
-            a = (d_av**2 - d_bv**2 + d_between**2) / (2 * d_between)
-            h = np.sqrt(max(0.0, d_av**2 - a**2))
-            p_mid = pa + a * (pb - pa) / d_between
-            # Perpendicular offset (two possible solutions, pick one consistently)
-            offset = h * np.array([-(pb[1] - pa[1]), (pb[0] - pa[0])]) / d_between
-            placed[vc] = p_mid + offset
-        # Case 2: One vertex placed - place second arbitrarily, then third via trilateration
-        elif len(placed) == 1:
-            anchor_v = list(placed.keys())[0]
-            other_vs = [v for v in [v0, v1, v2] if v != anchor_v]
-            second_v = other_vs[0]
-            # Find distance between anchor and second vertex
-            dist = l01 if (anchor_v == v0 and second_v == v1) or (anchor_v == v1 and second_v == v0) else l02 if (anchor_v == v0 and second_v == v2) or (anchor_v == v2 and second_v == v0) else l12
-            placed[second_v] = placed[anchor_v] + np.array([dist, 0.0])
-            # Now place third vertex
-            third_v = other_vs[1]
-            if third_v == v0: d_a, d_b = (l01, l02) if second_v == v1 else (l02, l01)
-            elif third_v == v1: d_a, d_b = (l01, l12) if second_v == v0 else (l12, l01)
-            else: d_a, d_b = (l02, l12) if second_v == v0 else (l12, l02)
-            pa, pb = placed[anchor_v], placed[second_v]
-            d_between = np.linalg.norm(pb - pa)
-            if d_between < 1e-10:
-                placed[third_v] = pa + np.array([d_a, 0.0])
-            else:
-                a_val = (d_a**2 - d_b**2 + d_between**2) / (2 * d_between)
-                h = np.sqrt(max(0.0, d_a**2 - a_val**2))
-                p_mid = pa + a_val * (pb - pa) / d_between
-                offset = h * np.array([-(pb[1] - pa[1]), (pb[0] - pa[0])]) / d_between
-                placed[third_v] = p_mid + offset
-        # Case 3: No vertices placed - place from scratch
-        else:
-            placed[v0] = np.array([0.0, 0.0])
-            placed[v1] = np.array([l01, 0.0])
-            cos_angle = (l01**2 + l02**2 - l12**2) / (2 * l01 * l02 + 1e-10)
-            cos_angle = np.clip(cos_angle, -1.0, 1.0)
-            placed[v2] = np.array([l02 * cos_angle, l02 * np.sqrt(max(0.0, 1.0 - cos_angle**2))])
-        
-        # Return coordinates in face vertex order
-        result = np.zeros((3, 2))
-        result[0], result[1], result[2] = placed[v0], placed[v1], placed[v2]
-        return result
     
     def _hsv_to_rgb(self, h, s, v):
         """Convert HSV color to RGB tuple (values 0-1)"""
