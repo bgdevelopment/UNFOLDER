@@ -1,1 +1,14 @@
-Nothing needs to be added to the .gitignore file since only a Python source file (`stl_unfolder.py`) was modified and no build artifacts, dependencies, or temporary files were included in the changes.
+```
+# Compiled Python files
+*.pyc
+__pycache__/
+
+# Output files
+cube_output.pdf
+cube_output.png
+cube_output.svg
+test_output.json
+test_output.pdf
+test_output.png
+test_output.svg
+```
