@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-STL Unfolder with Interactive Cutting and GUI Interface
+STL Unfolder with Interactive Cutting and Non-Overlapping Layout
+Exports to PDF/PNG/SVG for Papercrafting
 
 Requirements:
-    pip install trimesh numpy svgwrite tkinter
+    pip install trimesh numpy svgwrite reportlab pillow tkinter
 
 If you get ModuleNotFoundError, install the required packages:
-    pip install trimesh numpy svgwrite
+    pip install trimesh numpy svgwrite reportlab pillow
 """
 
 import sys
