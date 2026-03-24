@@ -871,12 +871,24 @@ class STLUnfolderGUI:
     def load_stl(self):
         """Open file dialog and load selected STL file"""
         fp = filedialog.askopenfilename(title="Select STL file", filetypes=[("STL files", "*.stl"), ("All files", "*.*")])
-        if fp and self.unfolder.load_mesh(fp):
-            self.update_status()
-            self.v3d.update_view()
-            messagebox.showinfo("Success", f"Loaded mesh with {len(self.unfolder.mesh.faces)} faces")
-        elif fp:
-            messagebox.showerror("Error", "Failed to load STL file")
+        if fp:
+            self.status_var.set(f"Loading {fp}...")
+            self.root.update_idletasks()
+            try:
+                if self.unfolder.load_mesh(fp):
+                    self.update_status()
+                    self.v3d.update_view()
+                    self.status_var.set(f"Loaded: {len(self.unfolder.mesh.faces)} faces")
+                else:
+                    self.status_var.set("Error: Failed to load STL file")
+            except Exception as e:
+                error_msg = f"Load failed: {str(e)}"
+                print(error_msg)
+                self.status_var.set(error_msg)
+                import traceback
+                traceback.print_exc()
+        else:
+            self.status_var.set("Ready")
     
     def clear_cuts(self):
         """Remove all cut edges and reset views"""
@@ -889,69 +901,129 @@ class STLUnfolderGUI:
     def auto_cut(self):
         """Generate automatic cutting pattern using spanning tree algorithm"""
         if not self.unfolder.mesh:
-            messagebox.showwarning("Warning", "Please load a mesh first")
+            self.status_var.set("Error: Please load a mesh first")
             return
-        nc = self.unfolder.auto_cut_seams()
-        self.v3d.selected_edges = self.unfolder.cut_edges.copy()
-        self.v3d.update_view()
-        self.update_status()
-        messagebox.showinfo("Auto-Cut", f"Made {nc} automatic cuts")
+        
+        self.status_var.set("Generating automatic cuts...")
+        self.root.update_idletasks()
+        
+        try:
+            nc = self.unfolder.auto_cut_seams()
+            self.v3d.selected_edges = self.unfolder.cut_edges.copy()
+            self.v3d.update_view()
+            self.status_var.set(f"Auto-cut complete: {nc} edges marked for cutting")
+        except Exception as e:
+            error_msg = f"Auto-cut failed: {str(e)}"
+            print(error_msg)
+            self.status_var.set(error_msg)
+            import traceback
+            traceback.print_exc()
     
     def unfold(self):
         """Perform the unfolding operation"""
         if not self.unfolder.mesh:
-            messagebox.showwarning("Warning", "Please load a mesh first")
+            self.status_var.set("Error: Please load a mesh first")
             return
-        if self.unfolder.unfold():
-            self.v2d.update_view()
-            self.update_status()
-            messagebox.showinfo("Success", "Mesh unfolded successfully!")
-        else:
-            messagebox.showerror("Error", "Failed to unfold mesh")
+        
+        self.status_var.set("Unfolding mesh... (this may take a moment)")
+        self.root.update_idletasks()  # Update UI before starting heavy calculation
+        
+        try:
+            if self.unfolder.unfold():
+                self.v2d.update_view()
+                self.status_var.set(f"Success! Unfolded {len(self.unfolder.faces_2d)} faces.")
+            else:
+                self.status_var.set("Error: Failed to unfold mesh")
+        except Exception as e:
+            error_msg = f"Unfolding failed: {str(e)}"
+            print(error_msg)  # Log to console for debugging
+            self.status_var.set(error_msg)
+            import traceback
+            traceback.print_exc()
     
     def export_svg(self):
         """Export unfolded mesh to SVG format"""
         if not self.unfolder.is_unfolded:
-            messagebox.showwarning("Warning", "Please unfold the mesh first")
+            self.status_var.set("Error: Please unfold the mesh first")
             return
         fp = filedialog.asksaveasfilename(title="Save SVG file", defaultextension=".svg", filetypes=[("SVG files", "*.svg"), ("All files", "*.*")])
-        if fp and self.unfolder.export_svg(fp):
-            messagebox.showinfo("Success", f"Exported to {fp}")
-        elif fp:
-            messagebox.showerror("Error", "Failed to export SVG")
+        if fp:
+            self.status_var.set(f"Exporting SVG to {fp}...")
+            self.root.update_idletasks()
+            try:
+                if self.unfolder.export_svg(fp):
+                    self.status_var.set(f"Exported SVG to {fp}")
+                else:
+                    self.status_var.set("Error: Failed to export SVG")
+            except Exception as e:
+                error_msg = f"SVG export failed: {str(e)}"
+                print(error_msg)
+                self.status_var.set(error_msg)
+                import traceback
+                traceback.print_exc()
     
     def export_json(self):
         """Export unfolded mesh to JSON format"""
         if not self.unfolder.is_unfolded:
-            messagebox.showwarning("Warning", "Please unfold the mesh first")
+            self.status_var.set("Error: Please unfold the mesh first")
             return
         fp = filedialog.asksaveasfilename(title="Save JSON file", defaultextension=".json", filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
-        if fp and self.unfolder.export_json(fp):
-            messagebox.showinfo("Success", f"Exported to {fp}")
-        elif fp:
-            messagebox.showerror("Error", "Failed to export JSON")
+        if fp:
+            self.status_var.set(f"Exporting JSON to {fp}...")
+            self.root.update_idletasks()
+            try:
+                if self.unfolder.export_json(fp):
+                    self.status_var.set(f"Exported JSON to {fp}")
+                else:
+                    self.status_var.set("Error: Failed to export JSON")
+            except Exception as e:
+                error_msg = f"JSON export failed: {str(e)}"
+                print(error_msg)
+                self.status_var.set(error_msg)
+                import traceback
+                traceback.print_exc()
     
     def export_pdf(self):
         """Export unfolded mesh to PDF for printing"""
         if not self.unfolder.is_unfolded:
-            messagebox.showwarning("Warning", "Please unfold the mesh first")
+            self.status_var.set("Error: Please unfold the mesh first")
             return
         fp = filedialog.asksaveasfilename(title="Save PDF file", defaultextension=".pdf", filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")])
-        if fp and self.unfolder.export_pdf(fp):
-            messagebox.showinfo("Success", f"Exported to {fp}")
-        elif fp:
-            messagebox.showerror("Error", "Failed to export PDF")
+        if fp:
+            self.status_var.set(f"Exporting PDF to {fp}...")
+            self.root.update_idletasks()
+            try:
+                if self.unfolder.export_pdf(fp):
+                    self.status_var.set(f"Exported PDF to {fp}")
+                else:
+                    self.status_var.set("Error: Failed to export PDF")
+            except Exception as e:
+                error_msg = f"PDF export failed: {str(e)}"
+                print(error_msg)
+                self.status_var.set(error_msg)
+                import traceback
+                traceback.print_exc()
     
     def export_png(self):
         """Export unfolded mesh to PNG image"""
         if not self.unfolder.is_unfolded:
-            messagebox.showwarning("Warning", "Please unfold the mesh first")
+            self.status_var.set("Error: Please unfold the mesh first")
             return
         fp = filedialog.asksaveasfilename(title="Save PNG file", defaultextension=".png", filetypes=[("PNG files", "*.png"), ("All files", "*.*")])
-        if fp and self.unfolder.export_png(fp):
-            messagebox.showinfo("Success", f"Exported to {fp}")
-        elif fp:
-            messagebox.showerror("Error", "Failed to export PNG")
+        if fp:
+            self.status_var.set(f"Exporting PNG to {fp}...")
+            self.root.update_idletasks()
+            try:
+                if self.unfolder.export_png(fp):
+                    self.status_var.set(f"Exported PNG to {fp}")
+                else:
+                    self.status_var.set("Error: Failed to export PNG")
+            except Exception as e:
+                error_msg = f"PNG export failed: {str(e)}"
+                print(error_msg)
+                self.status_var.set(error_msg)
+                import traceback
+                traceback.print_exc()
 
 
 def main():
