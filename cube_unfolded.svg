@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="80.0" height="80.0" viewBox="0 0 80.0 80.0">
+  <g transform="translate(20, 20)">
+    <path d="M 20.00,40.00 L 30.00,40.00 L 20.00,30.00 Z" fill="none" stroke="#9e50ca" stroke-width="0.5" opacity="0.7"/>
+    <path d="M 10.00,30.00 L 20.00,40.00 L 20.00,30.00 Z" fill="none" stroke="#875711" stroke-width="0.5" opacity="0.7"/>
+    <path d="M 20.00,30.00 L 30.00,40.00 L 30.00,30.00 Z" fill="none" stroke="#98ac50" stroke-width="0.5" opacity="0.7"/>
+    <path d="M 30.00,30.00 L 20.00,20.00 L 20.00,30.00 Z" fill="none" stroke="#ba9608" stroke-width="0.5" opacity="0.7"/>
+    <path d="M 20.00,40.00 L 30.00,50.00 L 30.00,40.00 Z" fill="none" stroke="#5fae5e" stroke-width="0.5" opacity="0.7"/>
+    <path d="M 10.00,40.00 L 20.00,40.00 L 10.00,30.00 Z" fill="none" stroke="#30c7f9" stroke-width="0.5" opacity="0.7"/>
+    <path d="M 20.00,50.00 L 30.00,50.00 L 20.00,40.00 Z" fill="none" stroke="#2ee9d1" stroke-width="0.5" opacity="0.7"/>
+    <path d="M 30.00,40.00 L 30.00,50.00 L 40.00,40.00 Z" fill="none" stroke="#681853" stroke-width="0.5" opacity="0.7"/>
+    <path d="M 30.00,20.00 L 20.00,20.00 L 30.00,30.00 Z" fill="none" stroke="#001564" stroke-width="0.5" opacity="0.7"/>
+    <path d="M 40.00,40.00 L 30.00,50.00 L 40.00,50.00 Z" fill="none" stroke="#e0b7ea" stroke-width="0.5" opacity="0.7"/>
+    <path d="M 0.00,30.00 L 10.00,40.00 L 10.00,30.00 Z" fill="none" stroke="#abbcd2" stroke-width="0.5" opacity="0.7"/>
+    <path d="M 30.00,50.00 L 20.00,50.00 L 30.00,60.00 Z" fill="none" stroke="#716ff2" stroke-width="0.5" opacity="0.7"/>
+  </g>
+</svg>
