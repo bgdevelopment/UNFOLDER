@@ -1,16 +1,50 @@
 #!/usr/bin/env python3
 """
-STL Unfolder with Interactive Cutting and GUI Interface
+STL Unfolder with Interactive Cutting and Non-Overlapping Layout
+Exports to PDF/PNG/SVG for Papercrafting
+
+Requirements:
+    pip install trimesh numpy svgwrite reportlab pillow tkinter
+
+If you get ModuleNotFoundError, install the required packages:
+    pip install trimesh numpy svgwrite reportlab pillow
 """
 
-import tkinter as tk
+import sys
+
+# Check for required dependencies and provide helpful error message
+try:
+    import tkinter as tk
+except ImportError:
+    print("ERROR: tkinter is not installed.")
+    print("Solution: Install tkinter using:")
+    print("  - Ubuntu/Debian: sudo apt-get install python3-tk")
+    print("  - Fedora: sudo dnf install python3-tkinter")
+    print("  - macOS: brew install python-tk")
+    print("  - Windows: tkinter comes bundled with Python")
+    sys.exit(1)
+
 from tkinter import ttk, filedialog, messagebox
 import numpy as np
-import trimesh
+
+try:
+    import trimesh
+except ImportError:
+    print("ERROR: trimesh module is not installed.")
+    print("Solution: Install required packages using:")
+    print("  pip install trimesh numpy svgwrite")
+    sys.exit(1)
+
 from typing import List, Tuple, Set, Dict, Optional
 import json
 import math
 from dataclasses import dataclass
+
+# Import PDF and PNG libraries (after dependency check)
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib.colors import HexColor, black
+from PIL import Image, ImageDraw
 
 
 @dataclass
@@ -261,6 +295,104 @@ class STLUnfolder:
             print(f"Error exporting SVG: {e}")
             return False
     
+    def export_pdf(self, filepath: str, scale: float = 1.0) -> bool:
+        """Export unfolded mesh to PDF for printing"""
+        if not self.is_unfolded or not self.unfolded_faces:
+            return False
+        try:
+            # Calculate bounds
+            all_points = np.vstack([f for f in self.unfolded_faces if f is not None])
+            min_x, min_y = all_points.min(axis=0)
+            max_x, max_y = all_points.max(axis=0)
+            width, height = max_x - min_x, max_y - min_y
+            
+            # Create PDF with A4 size
+            c = canvas.Canvas(filepath, pagesize=A4)
+            page_width, page_height = A4
+            
+            # Calculate scale to fit on page with margins
+            margin = 20
+            available_w = page_width - 2 * margin
+            available_h = page_height - 2 * margin
+            scale_factor = min(available_w / width, available_h / height) * scale
+            
+            # Offset to center on page
+            offset_x = margin + (available_w - width * scale_factor) / 2 - min_x * scale_factor
+            offset_y = margin + (available_h - height * scale_factor) / 2 - min_y * scale_factor
+            
+            # Draw each face
+            for face_idx, face_coords in enumerate(self.unfolded_faces):
+                if face_coords is None:
+                    continue
+                color = self.face_colors[face_idx]
+                pdf_color = HexColor(f"#{int(color[0]*255):02x}{int(color[1]*255):02x}{int(color[2]*255):02x}")
+                
+                # Create polygon path
+                path = c.beginPath()
+                first = True
+                for x, y in face_coords:
+                    px, py = x * scale_factor + offset_x, y * scale_factor + offset_y
+                    if first:
+                        path.moveTo(px, py)
+                        first = False
+                    else:
+                        path.lineTo(px, py)
+                path.close()
+                
+                # Fill and stroke
+                c.setFillColor(pdf_color)
+                c.setStrokeColor(black)
+                c.setLineWidth(0.5)
+                c.drawPath(path, fill=1, stroke=1)
+            
+            c.save()
+            return True
+        except Exception as e:
+            print(f"Error exporting PDF: {e}")
+            return False
+    
+    def export_png(self, filepath: str, scale: float = 2.0, bg_color: tuple = (255, 255, 255)) -> bool:
+        """Export unfolded mesh to PNG image"""
+        if not self.is_unfolded or not self.unfolded_faces:
+            return False
+        try:
+            # Calculate bounds
+            all_points = np.vstack([f for f in self.unfolded_faces if f is not None])
+            min_x, min_y = all_points.min(axis=0)
+            max_x, max_y = all_points.max(axis=0)
+            width, height = max_x - min_x, max_y - min_y
+            
+            # Image dimensions
+            img_width = int(width * scale) + 40
+            img_height = int(height * scale) + 40
+            
+            # Create image
+            img = Image.new('RGB', (img_width, img_height), bg_color)
+            draw = ImageDraw.Draw(img)
+            
+            # Calculate offset to center
+            offset_x = 20 - min_x * scale
+            offset_y = 20 - min_y * scale
+            
+            # Draw each face
+            for face_idx, face_coords in enumerate(self.unfolded_faces):
+                if face_coords is None:
+                    continue
+                color = self.face_colors[face_idx]
+                fill_color = (int(color[0]*255), int(color[1]*255), int(color[2]*255), 180)
+                
+                # Convert coordinates
+                pts = [(x * scale + offset_x, y * scale + offset_y) for x, y in face_coords]
+                
+                # Draw polygon
+                draw.polygon(pts, fill=fill_color, outline=(0, 0, 0))
+            
+            img.save(filepath)
+            return True
+        except Exception as e:
+            print(f"Error exporting PNG: {e}")
+            return False
+    
     def export_json(self, filepath: str) -> bool:
         if not self.is_unfolded or not self.unfolded_faces:
             return False
@@ -454,6 +586,8 @@ class STLUnfolderGUI:
         ef = ttk.LabelFrame(cf, text="Export", padding=5)
         ef.pack(fill=tk.X, pady=(0, 10))
         ttk.Button(ef, text="Export SVG", command=self.export_svg).pack(fill=tk.X, pady=2)
+        ttk.Button(ef, text="Export PDF", command=self.export_pdf).pack(fill=tk.X, pady=2)
+        ttk.Button(ef, text="Export PNG", command=self.export_png).pack(fill=tk.X, pady=2)
         ttk.Button(ef, text="Export JSON", command=self.export_json).pack(fill=tk.X, pady=2)
         self.info = ttk.Label(cf, text="Status: Ready", wraplength=200)
         self.info.pack(fill=tk.X, pady=10)
@@ -534,6 +668,26 @@ class STLUnfolderGUI:
             messagebox.showinfo("Success", f"Exported to {fp}")
         elif fp:
             messagebox.showerror("Error", "Failed to export JSON")
+    
+    def export_pdf(self):
+        if not self.unfolder.is_unfolded:
+            messagebox.showwarning("Warning", "Please unfold the mesh first")
+            return
+        fp = filedialog.asksaveasfilename(title="Save PDF file", defaultextension=".pdf", filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")])
+        if fp and self.unfolder.export_pdf(fp):
+            messagebox.showinfo("Success", f"Exported to {fp}")
+        elif fp:
+            messagebox.showerror("Error", "Failed to export PDF")
+    
+    def export_png(self):
+        if not self.unfolder.is_unfolded:
+            messagebox.showwarning("Warning", "Please unfold the mesh first")
+            return
+        fp = filedialog.asksaveasfilename(title="Save PNG file", defaultextension=".png", filetypes=[("PNG files", "*.png"), ("All files", "*.*")])
+        if fp and self.unfolder.export_png(fp):
+            messagebox.showinfo("Success", f"Exported to {fp}")
+        elif fp:
+            messagebox.showerror("Error", "Failed to export PNG")
 
 
 def main():

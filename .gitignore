@@ -1,4 +1,14 @@
 ```
-__pycache__/
+# Compiled Python files
 *.pyc
+__pycache__/
+
+# Output files
+cube_output.pdf
+cube_output.png
+cube_output.svg
+test_output.json
+test_output.pdf
+test_output.png
+test_output.svg
 ```
