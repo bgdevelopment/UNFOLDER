@@ -3,6 +3,11 @@
 STL Unfolder with Interactive Cutting and Non-Overlapping Layout
 Exports to PDF/PNG/SVG for Papercrafting
 
+This program loads a 3D STL mesh file, allows interactive edge cutting,
+and unfolds the mesh into a 2D layout suitable for papercrafting.
+The unfolded result can be exported to PDF (for printing), PNG (for preview),
+SVG (for laser cutting), or JSON (for further processing).
+
 Requirements:
     pip install trimesh numpy svgwrite reportlab pillow tkinter
 
@@ -12,7 +17,11 @@ If you get ModuleNotFoundError, install the required packages:
 
 import sys
 
-# Check for required dependencies and provide helpful error message
+# ============================================================================
+# DEPENDENCY CHECKS
+# Check for required dependencies and provide helpful error messages
+# This ensures users get clear installation instructions instead of cryptic errors
+# ============================================================================
 try:
     import tkinter as tk
 except ImportError:
@@ -32,7 +41,7 @@ try:
 except ImportError:
     print("ERROR: trimesh module is not installed.")
     print("Solution: Install required packages using:")
-    print("  pip install trimesh numpy svgwrite")
+    print("  pip install trimesh numpy svgwrite reportlab pillow")
     sys.exit(1)
 
 from typing import List, Tuple, Set, Dict, Optional
@@ -47,21 +56,44 @@ from reportlab.lib.colors import HexColor, black
 from PIL import Image, ImageDraw
 
 
+# ============================================================================
+# DATA CLASSES
+# ============================================================================
 @dataclass
 class Edge:
+    """
+    Represents an edge in the mesh.
+    
+    Attributes:
+        v1, v2: Indices of the two vertices that form this edge
+        faces: List of face indices that share this edge (usually 1 or 2)
+    """
     v1: int
     v2: int
     faces: List[int]
     
     def __hash__(self):
+        """Hash based on sorted vertex indices for consistent edge identification"""
         return hash(tuple(sorted([self.v1, self.v2])))
     
     def __eq__(self, other):
+        """Equality check ignores vertex order (edge v1-v2 is same as v2-v1)"""
         return set([self.v1, self.v2]) == set([other.v1, other.v2])
 
 
 class STLUnfolder:
+    """
+    Main class for loading, cutting, and unfolding STL meshes.
+    
+    This class handles:
+    - Loading STL mesh files (binary and ASCII formats)
+    - Managing cut edges (edges that will be separated during unfolding)
+    - Computing the 2D unfolded layout using BFS propagation
+    - Exporting to various formats (SVG, PDF, PNG, JSON)
+    """
+    
     def __init__(self):
+        """Initialize the unfolder with empty mesh and no cuts"""
         self.mesh: Optional[trimesh.Trimesh] = None
         self.cut_edges: Set[Edge] = set()
         self.unfolded_faces: List[np.ndarray] = []
@@ -69,8 +101,18 @@ class STLUnfolder:
         self.is_unfolded = False
         
     def load_mesh(self, filepath: str) -> bool:
+        """
+        Load an STL mesh file.
+        
+        Args:
+            filepath: Path to the STL file
+            
+        Returns:
+            True if loading succeeded, False otherwise
+        """
         try:
             self.mesh = trimesh.load(filepath, force='mesh')
+            # Handle scene objects by extracting the first geometry
             if not isinstance(self.mesh, trimesh.Trimesh):
                 if hasattr(self.mesh, 'geometry'):
                     geometries = list(self.mesh.geometry.values())
@@ -78,6 +120,7 @@ class STLUnfolder:
                         self.mesh = geometries[0]
                     else:
                         return False
+            # Reset cuts and unfolded state when loading new mesh
             self.cut_edges = set()
             self.is_unfolded = False
             self.unfolded_faces = []
@@ -87,8 +130,15 @@ class STLUnfolder:
             return False
     
     def get_all_edges(self) -> List[Edge]:
+        """
+        Extract all unique edges from the mesh with their connected faces.
+        
+        Returns:
+            List of Edge objects containing vertex indices and face references
+        """
         if self.mesh is None:
             return []
+        # Build edge-to-faces mapping
         edges_dict: Dict[Tuple[int, int], List[int]] = {}
         for face_idx, face in enumerate(self.mesh.faces):
             for i in range(3):
@@ -100,30 +150,48 @@ class STLUnfolder:
         return [Edge(v1=k[0], v2=k[1], faces=v) for k, v in edges_dict.items()]
     
     def add_cut_edge(self, edge: Edge):
+        """Mark an edge as cut (will be separated during unfolding)"""
         self.cut_edges.add(edge)
         self.is_unfolded = False
     
     def remove_cut_edge(self, edge: Edge):
+        """Remove an edge from the cut set (faces will remain connected)"""
         self.cut_edges.discard(edge)
         self.is_unfolded = False
     
     def clear_cuts(self):
+        """Remove all cut edges"""
         self.cut_edges = set()
         self.is_unfolded = False
     
     def is_edge_cut(self, edge: Edge) -> bool:
+        """Check if an edge is marked as cut"""
         return edge in self.cut_edges
     
     def unfold(self) -> bool:
+        """
+        Unfold the 3D mesh to 2D plane using BFS propagation.
+        
+        The algorithm works by:
+        1. Starting from an arbitrary face and placing it flat on the 2D plane
+        2. Using BFS to visit connected faces (faces sharing non-cut edges)
+        3. For each new face, computing its 2D position based on shared edge with already-placed neighbor
+        4. Handling disconnected components by placing them with offset
+        
+        Returns:
+            True if unfolding succeeded, False otherwise
+        """
         if self.mesh is None:
             return False
         n_faces = len(self.mesh.faces)
         self.unfolded_faces = [None] * n_faces
         self.face_colors = []
+        # Generate distinct colors for each face using golden angle for even distribution
         for i in range(n_faces):
             hue = (i * 137.508) % 360
             self.face_colors.append(self._hsv_to_rgb(hue, 0.6, 0.8))
         
+        # Build adjacency graph: faces are connected if they share a non-cut edge
         adjacency: Dict[int, List[int]] = {i: [] for i in range(n_faces)}
         for edge in self.get_all_edges():
             if len(edge.faces) == 2 and not self.is_edge_cut(edge):
@@ -131,30 +199,38 @@ class STLUnfolder:
                 adjacency[f1].append(f2)
                 adjacency[f2].append(f1)
         
+        # BFS traversal starting from first face
         visited = set()
         queue = [0]
         visited.add(0)
         
+        # Place first face at origin
         face0 = self.mesh.faces[0]
         v0, v1, v2 = face0
         p0, p1, p2 = self.mesh.vertices[v0], self.mesh.vertices[v1], self.mesh.vertices[v2]
         l01 = np.linalg.norm(p1 - p0)
         l02 = np.linalg.norm(p2 - p0)
         l12 = np.linalg.norm(p2 - p1)
+        # Use law of cosines to compute angle at v0
         cos_angle = (l01**2 + l02**2 - l12**2) / (2 * l01 * l02 + 1e-10)
         cos_angle = np.clip(cos_angle, -1.0, 1.0)
         
+        # Place first triangle with v0 at origin, v1 on x-axis
         self.unfolded_faces[0] = np.array([[0.0, 0.0], [l01, 0.0], [l02 * cos_angle, l02 * np.sqrt(max(0.0, 1.0 - cos_angle**2))]])
         
+        # Track global 2D coordinates for each vertex
         global_coords: Dict[int, np.ndarray] = {}
         for i, coord in enumerate(self.unfolded_faces[0]):
             global_coords[self.mesh.faces[0][i]] = coord
         
+        # BFS propagation: place neighbors of already-placed faces
         while queue:
             current_face = queue.pop(0)
             for neighbor in adjacency[current_face]:
                 if neighbor not in visited:
+                    # Find shared vertices between current and neighbor face
                     shared_verts = set(self.mesh.faces[current_face]) & set(self.mesh.faces[neighbor])
+                    # Get 2D coordinates of shared vertices from already-placed face
                     neighbor_coords = {v: global_coords[v] for v in shared_verts if v in global_coords}
                     if neighbor_coords:
                         new_coords = self._compute_face_transform(neighbor, neighbor_coords, global_coords)
@@ -166,6 +242,7 @@ class STLUnfolder:
                             visited.add(neighbor)
                             queue.append(neighbor)
         
+        # Handle disconnected components (if any)
         for i in range(n_faces):
             if i not in visited:
                 queue = [i]
@@ -176,11 +253,13 @@ class STLUnfolder:
                 l01, l02, l12 = np.linalg.norm(p1-p0), np.linalg.norm(p2-p0), np.linalg.norm(p2-p1)
                 cos_angle = (l01**2 + l02**2 - l12**2) / (2 * l01 * l02 + 1e-10)
                 cos_angle = np.clip(cos_angle, -1.0, 1.0)
+                # Offset disconnected component to avoid overlap
                 offset_x = max([fc[:, 0].max() for fc in self.unfolded_faces if fc is not None], default=0) + 10
                 self.unfolded_faces[i] = np.array([[offset_x, 0.0], [offset_x + l01, 0.0], [offset_x + l02 * cos_angle, l02 * np.sqrt(max(0.0, 1.0 - cos_angle**2))]])
                 for j, v_idx in enumerate(self.mesh.faces[i]):
                     if v_idx not in global_coords:
                         global_coords[v_idx] = self.unfolded_faces[i][j]
+                # Propagate within this component
                 while queue:
                     current_face = queue.pop(0)
                     for neighbor in adjacency[current_face]:
@@ -197,6 +276,7 @@ class STLUnfolder:
                                     visited.add(neighbor)
                                     queue.append(neighbor)
         
+        # Center the entire unfolded mesh at origin
         all_points = np.vstack([f for f in self.unfolded_faces if f is not None])
         centroid = all_points.mean(axis=0)
         self.unfolded_faces = [f - centroid if f is not None else None for f in self.unfolded_faces]
@@ -204,6 +284,20 @@ class STLUnfolder:
         return True
     
     def _compute_face_transform(self, face_idx, neighbor_coords, global_coords):
+        """
+        Compute 2D coordinates for a face based on shared vertices with already-placed neighbor.
+        
+        Uses trilateration: given known positions of 1-2 vertices and edge lengths,
+        compute positions of remaining vertices.
+        
+        Args:
+            face_idx: Index of the face to compute
+            neighbor_coords: Dict mapping vertex indices to their 2D coordinates (from neighbor)
+            global_coords: Global dict of all placed vertex coordinates
+            
+        Returns:
+            Array of 2D coordinates for the three vertices of the face, or None if computation fails
+        """
         if self.mesh is None:
             return None
         face = self.mesh.faces[face_idx]
@@ -211,16 +305,19 @@ class STLUnfolder:
         p0, p1, p2 = self.mesh.vertices[v0], self.mesh.vertices[v1], self.mesh.vertices[v2]
         l01, l02, l12 = np.linalg.norm(p1-p0), np.linalg.norm(p2-p0), np.linalg.norm(p2-p1)
         
+        # Track which vertices we've placed
         placed = {}
         for vi in [v0, v1, v2]:
             if vi in neighbor_coords:
                 placed[vi] = neighbor_coords[vi]
         
+        # Case 1: Two vertices already placed - use trilateration for third
         if len(placed) >= 2:
             placed_vs = list(placed.keys())[:2]
             va, vb = placed_vs[0], placed_vs[1]
             verts = [v0, v1, v2]
             vc = [v for v in [v0, v1, v2] if v not in placed][0]
+            # Determine distances from vc to va and vb
             if vc == v0: d_av, d_bv = l01, l02
             elif vc == v1: d_av, d_bv = l01, l12
             else: d_av, d_bv = l02, l12
@@ -228,17 +325,22 @@ class STLUnfolder:
             d_between = np.linalg.norm(pb - pa)
             if d_between < 1e-10:
                 return None
+            # Law of cosines to find position along line ab
             a = (d_av**2 - d_bv**2 + d_between**2) / (2 * d_between)
             h = np.sqrt(max(0.0, d_av**2 - a**2))
             p_mid = pa + a * (pb - pa) / d_between
+            # Perpendicular offset (two possible solutions, pick one consistently)
             offset = h * np.array([-(pb[1] - pa[1]), (pb[0] - pa[0])]) / d_between
             placed[vc] = p_mid + offset
+        # Case 2: One vertex placed - place second arbitrarily, then third via trilateration
         elif len(placed) == 1:
             anchor_v = list(placed.keys())[0]
             other_vs = [v for v in [v0, v1, v2] if v != anchor_v]
             second_v = other_vs[0]
+            # Find distance between anchor and second vertex
             dist = l01 if (anchor_v == v0 and second_v == v1) or (anchor_v == v1 and second_v == v0) else l02 if (anchor_v == v0 and second_v == v2) or (anchor_v == v2 and second_v == v0) else l12
             placed[second_v] = placed[anchor_v] + np.array([dist, 0.0])
+            # Now place third vertex
             third_v = other_vs[1]
             if third_v == v0: d_a, d_b = (l01, l02) if second_v == v1 else (l02, l01)
             elif third_v == v1: d_a, d_b = (l01, l12) if second_v == v0 else (l12, l01)
@@ -253,6 +355,7 @@ class STLUnfolder:
                 p_mid = pa + a_val * (pb - pa) / d_between
                 offset = h * np.array([-(pb[1] - pa[1]), (pb[0] - pa[0])]) / d_between
                 placed[third_v] = p_mid + offset
+        # Case 3: No vertices placed - place from scratch
         else:
             placed[v0] = np.array([0.0, 0.0])
             placed[v1] = np.array([l01, 0.0])
@@ -260,11 +363,13 @@ class STLUnfolder:
             cos_angle = np.clip(cos_angle, -1.0, 1.0)
             placed[v2] = np.array([l02 * cos_angle, l02 * np.sqrt(max(0.0, 1.0 - cos_angle**2))])
         
+        # Return coordinates in face vertex order
         result = np.zeros((3, 2))
         result[0], result[1], result[2] = placed[v0], placed[v1], placed[v2]
         return result
     
     def _hsv_to_rgb(self, h, s, v):
+        """Convert HSV color to RGB tuple (values 0-1)"""
         h = h / 360.0
         if s == 0: return (v, v, v)
         i = int(h * 6)
@@ -274,9 +379,20 @@ class STLUnfolder:
         return [(v,t,p),(q,v,p),(p,v,t),(p,q,v),(t,p,v),(v,p,q)][i]
     
     def export_svg(self, filepath: str, scale: float = 1.0) -> bool:
+        """
+        Export unfolded mesh to SVG format.
+        
+        Args:
+            filepath: Output file path
+            scale: Scaling factor for the output
+            
+        Returns:
+            True if export succeeded, False otherwise
+        """
         if not self.is_unfolded or not self.unfolded_faces:
             return False
         try:
+            # Calculate bounding box of all faces
             all_points = np.vstack([f for f in self.unfolded_faces if f is not None])
             min_x, min_y = all_points.min(axis=0)
             max_x, max_y = all_points.max(axis=0)
@@ -296,7 +412,19 @@ class STLUnfolder:
             return False
     
     def export_pdf(self, filepath: str, scale: float = 1.0) -> bool:
-        """Export unfolded mesh to PDF for printing"""
+        """
+        Export unfolded mesh to PDF for printing on A4 paper.
+        
+        The mesh is automatically scaled and centered to fit on an A4 page
+        with appropriate margins for papercrafting.
+        
+        Args:
+            filepath: Output file path
+            scale: Additional scaling factor (1.0 = fit to page)
+            
+        Returns:
+            True if export succeeded, False otherwise
+        """
         if not self.is_unfolded or not self.unfolded_faces:
             return False
         try:
@@ -352,7 +480,17 @@ class STLUnfolder:
             return False
     
     def export_png(self, filepath: str, scale: float = 2.0, bg_color: tuple = (255, 255, 255)) -> bool:
-        """Export unfolded mesh to PNG image"""
+        """
+        Export unfolded mesh to PNG image.
+        
+        Args:
+            filepath: Output file path
+            scale: Pixels per unit (higher = larger image)
+            bg_color: Background color as RGB tuple (default: white)
+            
+        Returns:
+            True if export succeeded, False otherwise
+        """
         if not self.is_unfolded or not self.unfolded_faces:
             return False
         try:
@@ -394,6 +532,17 @@ class STLUnfolder:
             return False
     
     def export_json(self, filepath: str) -> bool:
+        """
+        Export unfolded mesh to JSON format with vertex coordinates.
+        
+        Useful for further processing or integration with other tools.
+        
+        Args:
+            filepath: Output file path
+            
+        Returns:
+            True if export succeeded, False otherwise
+        """
         if not self.is_unfolded or not self.unfolded_faces:
             return False
         try:
@@ -419,6 +568,16 @@ class STLUnfolder:
             return False
     
     def auto_cut_seams(self) -> int:
+        """
+        Automatically generate cutting pattern using spanning tree algorithm.
+        
+        This creates a minimum set of cuts that allows the mesh to be unfolded
+        without overlaps, suitable for papercrafting. Uses BFS to build a
+        spanning tree of faces, then cuts all edges not in the tree.
+        
+        Returns:
+            Number of cuts made
+        """
         if self.mesh is None:
             return 0
         edges = self.get_all_edges()
@@ -429,6 +588,7 @@ class STLUnfolder:
             f1, f2 = edge.faces
             face_graph[f1].add(f2)
             face_graph[f2].add(f1)
+        # Build spanning tree using BFS
         visited, queue, tree_edges = {0}, [0], set()
         while queue:
             current = queue.pop(0)
@@ -437,6 +597,7 @@ class STLUnfolder:
                     visited.add(neighbor)
                     queue.append(neighbor)
                     tree_edges.add(tuple(sorted([current, neighbor])))
+        # Cut all edges not in spanning tree
         cuts_made = 0
         for edge in internal_edges:
             f1, f2 = edge.faces
@@ -447,7 +608,17 @@ class STLUnfolder:
 
 
 class MeshViewer3D(tk.Canvas):
+    """
+    Interactive 3D mesh viewer with edge selection for cutting.
+    
+    Features:
+    - Rotate mesh by dragging
+    - Zoom with mouse wheel
+    - Click edges to toggle cut status (red=cut, blue=connected)
+    """
+    
     def __init__(self, parent, unfolder, **kwargs):
+        """Initialize the 3D viewer"""
         super().__init__(parent, **kwargs)
         self.unfolder = unfolder
         self.rotation_x, self.rotation_y = 0.5, 0.5
@@ -455,6 +626,7 @@ class MeshViewer3D(tk.Canvas):
         self.drag_start = None
         self.selected_edges = set()
         self.edge_screen_coords = {}
+        # Bind mouse events
         self.bind("<Configure>", lambda e: self.update_view())
         self.bind("<ButtonPress-1>", lambda e: setattr(self, 'drag_start', (e.x, e.y)))
         self.bind("<B1-Motion>", self.on_drag)
@@ -462,6 +634,7 @@ class MeshViewer3D(tk.Canvas):
         self.bind("<MouseWheel>", lambda e: self.scale_update(e.delta))
     
     def on_drag(self, event):
+        """Handle mouse drag for rotation"""
         if self.drag_start:
             self.rotation_y += (event.x - self.drag_start[0]) * 0.01
             self.rotation_x += (event.y - self.drag_start[1]) * 0.01
@@ -469,15 +642,21 @@ class MeshViewer3D(tk.Canvas):
             self.update_view()
     
     def on_release(self, event):
+        """Handle mouse release - select edge if click was stationary"""
         if self.drag_start and abs(event.x - self.drag_start[0]) < 5 and abs(event.y - self.drag_start[1]) < 5:
             self.select_edge_at(event.x, event.y)
         self.drag_start = None
     
     def scale_update(self, delta):
+        """Handle mouse wheel zoom"""
         self.scale *= 1.1 if delta > 0 else 0.9
         self.update_view()
     
     def select_edge_at(self, x, y):
+        """
+        Select the nearest edge to the click position.
+        Toggles the cut status of the selected edge.
+        """
         if not self.unfolder.mesh: return
         min_dist, selected = 10.0, None
         for edge, coords in self.edge_screen_coords.items():
@@ -500,6 +679,7 @@ class MeshViewer3D(tk.Canvas):
             self.update_view()
     
     def update_view(self):
+        """Render the 3D mesh with current rotation and cut edges highlighted"""
         self.delete("all")
         self.edge_screen_coords.clear()
         if not self.unfolder.mesh:
@@ -507,19 +687,23 @@ class MeshViewer3D(tk.Canvas):
             return
         w, h = self.winfo_width(), self.winfo_height()
         cx, cy = w // 2, h // 2
+        # Center vertices and calculate scale
         verts = self.unfolder.mesh.vertices.copy() - self.unfolder.mesh.vertices.mean(axis=0)
         max_dim = max(verts.max(axis=0) - verts.min(axis=0))
         sf = min(w, h) * 0.4 / max_dim * self.scale if max_dim > 0 else 1.0
         rx, ry = self.rotation_x, self.rotation_y
+        # Apply rotation matrices
         rot_y = np.array([[math.cos(ry), 0, math.sin(ry)], [0, 1, 0], [-math.sin(ry), 0, math.cos(ry)]])
         rot_x = np.array([[1, 0, 0], [0, math.cos(rx), -math.sin(rx)], [0, math.sin(rx), math.cos(rx)]])
         verts = verts @ rot_y.T @ rot_x.T
         proj = verts[:, :2] * sf + np.array([cx, cy])
+        # Draw back-facing triangles first (simple depth sorting)
         for face in self.unfolder.mesh.faces:
             pts = proj[face]
             cross = (pts[1,0]-pts[0,0])*(pts[2,1]-pts[0,1]) - (pts[1,1]-pts[0,1])*(pts[2,0]-pts[0,0])
             if cross > 0:
                 self.create_polygon([(pts[i,0], pts[i,1]) for i in range(3)], outline="black", fill="#cccccc", width=1)
+        # Draw edges: red for cuts, blue for connected
         for edge in self.unfolder.get_all_edges():
             p1, p2 = proj[edge.v1], proj[edge.v2]
             self.edge_screen_coords[edge] = ((int(p1[0]), int(p1[1])), (int(p2[0]), int(p2[1])))
@@ -528,7 +712,17 @@ class MeshViewer3D(tk.Canvas):
 
 
 class UnfoldedViewer2D(tk.Canvas):
+    """
+    2D viewer for displaying the unfolded mesh.
+    
+    Features:
+    - Zoom with mouse wheel
+    - Color-coded faces matching the 3D view
+    - Black outlines for easy cutting
+    """
+    
     def __init__(self, parent, unfolder, **kwargs):
+        """Initialize the 2D viewer"""
         super().__init__(parent, **kwargs)
         self.unfolder = unfolder
         self.scale = 1.0
@@ -536,10 +730,12 @@ class UnfoldedViewer2D(tk.Canvas):
         self.bind("<MouseWheel>", lambda e: self.zoom(e.delta))
     
     def zoom(self, delta):
+        """Handle mouse wheel zoom"""
         self.scale *= 1.1 if delta > 0 else 0.9
         self.update_view()
     
     def update_view(self):
+        """Render the unfolded 2D mesh"""
         self.delete("all")
         if not self.unfolder.is_unfolded or not self.unfolder.unfolded_faces:
             self.create_text(self.winfo_width()//2, self.winfo_height()//2, text="No unfolded mesh (click 'Unfold' first)", fill="gray")
@@ -560,7 +756,19 @@ class UnfoldedViewer2D(tk.Canvas):
 
 
 class STLUnfolderGUI:
+    """
+    Main GUI application for the STL Unfolder.
+    
+    Provides a complete interface for:
+    - Loading STL files
+    - Interactive edge cutting (click edges in 3D view)
+    - Automatic seam generation
+    - 2D unfolding preview
+    - Export to PDF, PNG, SVG, and JSON formats
+    """
+    
     def __init__(self, root):
+        """Initialize the GUI application"""
         self.root = root
         self.root.title("STL Unfolder - Interactive Cutting & Unfolding")
         self.root.geometry("1400x900")
@@ -568,51 +776,75 @@ class STLUnfolderGUI:
         self.setup_ui()
     
     def setup_ui(self):
+        """Set up the user interface layout"""
+        # Main frame
         mf = ttk.Frame(self.root)
         mf.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Control panel on left
         cf = ttk.LabelFrame(mf, text="Controls", padding=10)
         cf.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
+        
+        # File operations section
         ff = ttk.LabelFrame(cf, text="File", padding=5)
         ff.pack(fill=tk.X, pady=(0, 10))
         ttk.Button(ff, text="Load STL", command=self.load_stl).pack(fill=tk.X, pady=2)
         ttk.Button(ff, text="Clear Cuts", command=self.clear_cuts).pack(fill=tk.X, pady=2)
+        
+        # Cutting controls section
         cut_f = ttk.LabelFrame(cf, text="Cutting", padding=5)
         cut_f.pack(fill=tk.X, pady=(0, 10))
         ttk.Button(cut_f, text="Auto-Cut Seams", command=self.auto_cut).pack(fill=tk.X, pady=2)
         ttk.Label(cut_f, text="Click edges in 3D view to toggle cuts\n(Red=cut, Blue=connected)").pack(fill=tk.X, pady=5)
+        
+        # Unfolding controls section
         uf = ttk.LabelFrame(cf, text="Unfolding", padding=5)
         uf.pack(fill=tk.X, pady=(0, 10))
         ttk.Button(uf, text="Unfold to 2D", command=self.unfold).pack(fill=tk.X, pady=2)
+        
+        # Export options section
         ef = ttk.LabelFrame(cf, text="Export", padding=5)
         ef.pack(fill=tk.X, pady=(0, 10))
         ttk.Button(ef, text="Export SVG", command=self.export_svg).pack(fill=tk.X, pady=2)
         ttk.Button(ef, text="Export PDF", command=self.export_pdf).pack(fill=tk.X, pady=2)
         ttk.Button(ef, text="Export PNG", command=self.export_png).pack(fill=tk.X, pady=2)
         ttk.Button(ef, text="Export JSON", command=self.export_json).pack(fill=tk.X, pady=2)
+        
+        # Status display
         self.info = ttk.Label(cf, text="Status: Ready", wraplength=200)
         self.info.pack(fill=tk.X, pady=10)
+        
+        # Viewer area on right with split panes
         vf = ttk.Frame(mf)
         vf.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
         paned = ttk.PanedWindow(vf, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True)
+        
+        # 3D viewer pane
         v3f = ttk.LabelFrame(paned, text="3D View (Click edges to cut)")
         paned.add(v3f, weight=1)
         self.v3d = MeshViewer3D(v3f, self.unfolder, bg="white")
         self.v3d.pack(fill=tk.BOTH, expand=True)
+        
+        # 2D unfolded viewer pane
         v2f = ttk.LabelFrame(paned, text="2D Unfolded View")
         paned.add(v2f, weight=1)
         self.v2d = UnfoldedViewer2D(v2f, self.unfolder, bg="white")
         self.v2d.pack(fill=tk.BOTH, expand=True)
+        
+        # Bottom status bar
         self.status_var = tk.StringVar(value="Loaded: None | Faces: 0 | Cuts: 0")
         ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN).pack(side=tk.BOTTOM, fill=tk.X)
     
     def update_status(self):
+        """Update status displays with current mesh information"""
         nf = len(self.unfolder.mesh.faces) if self.unfolder.mesh else 0
         nc = len(self.unfolder.cut_edges)
         self.status_var.set(f"Loaded: {'Mesh' if self.unfolder.mesh else 'None'} | Faces: {nf} | Cuts: {nc}")
         self.info.config(text=f"Status: {'Unfolded' if self.unfolder.is_unfolded else 'Ready'}\nFaces: {nf}, Cuts: {nc}")
     
     def load_stl(self):
+        """Open file dialog and load selected STL file"""
         fp = filedialog.askopenfilename(title="Select STL file", filetypes=[("STL files", "*.stl"), ("All files", "*.*")])
         if fp and self.unfolder.load_mesh(fp):
             self.update_status()
@@ -622,6 +854,7 @@ class STLUnfolderGUI:
             messagebox.showerror("Error", "Failed to load STL file")
     
     def clear_cuts(self):
+        """Remove all cut edges and reset views"""
         self.unfolder.clear_cuts()
         self.v3d.selected_edges.clear()
         self.v3d.update_view()
@@ -629,6 +862,7 @@ class STLUnfolderGUI:
         self.update_status()
     
     def auto_cut(self):
+        """Generate automatic cutting pattern using spanning tree algorithm"""
         if not self.unfolder.mesh:
             messagebox.showwarning("Warning", "Please load a mesh first")
             return
@@ -639,6 +873,7 @@ class STLUnfolderGUI:
         messagebox.showinfo("Auto-Cut", f"Made {nc} automatic cuts")
     
     def unfold(self):
+        """Perform the unfolding operation"""
         if not self.unfolder.mesh:
             messagebox.showwarning("Warning", "Please load a mesh first")
             return
@@ -650,6 +885,7 @@ class STLUnfolderGUI:
             messagebox.showerror("Error", "Failed to unfold mesh")
     
     def export_svg(self):
+        """Export unfolded mesh to SVG format"""
         if not self.unfolder.is_unfolded:
             messagebox.showwarning("Warning", "Please unfold the mesh first")
             return
@@ -660,6 +896,7 @@ class STLUnfolderGUI:
             messagebox.showerror("Error", "Failed to export SVG")
     
     def export_json(self):
+        """Export unfolded mesh to JSON format"""
         if not self.unfolder.is_unfolded:
             messagebox.showwarning("Warning", "Please unfold the mesh first")
             return
@@ -670,6 +907,7 @@ class STLUnfolderGUI:
             messagebox.showerror("Error", "Failed to export JSON")
     
     def export_pdf(self):
+        """Export unfolded mesh to PDF for printing"""
         if not self.unfolder.is_unfolded:
             messagebox.showwarning("Warning", "Please unfold the mesh first")
             return
@@ -680,6 +918,7 @@ class STLUnfolderGUI:
             messagebox.showerror("Error", "Failed to export PDF")
     
     def export_png(self):
+        """Export unfolded mesh to PNG image"""
         if not self.unfolder.is_unfolded:
             messagebox.showwarning("Warning", "Please unfold the mesh first")
             return
@@ -691,6 +930,7 @@ class STLUnfolderGUI:
 
 
 def main():
+    """Entry point: create and run the GUI application"""
     root = tk.Tk()
     app = STLUnfolderGUI(root)
     root.mainloop()
